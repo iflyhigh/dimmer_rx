@@ -26,7 +26,7 @@ rx_config_t rx_config;
 #define RX_PIN 11				// TX connects to this pin
 #define DIM_PIN 9 				// dimmer output pin
 #define LED_PIN 13				// LED connects to this pin
-#define	PROG_ENABLE_PIN 4 		// if this pin is LOW, enable TX programming mode. Pins 5-9 are used to set channel
+#define	PROG_ENABLE_PIN 3 		// if this pin is LOW, enable TX programming mode. Pins 5-9 are used to set channel
 #define PROG_PIN_COUNT 5 		// number of programming pins
 
 // Dimmer 3-byte message format
@@ -51,7 +51,7 @@ rx_config_t rx_config;
 uint8_t channel = 0;			// channel to transmit information, 5 bits are used (31 channels supported, channel value 0 is used to detect EEPROM read failures)
 uint8_t dim_low = 0;			// low dimmable brightness value (multiplied by 10 at RX)
 uint8_t dim_high = 100;			// high dimmable brightness value (multiplied by 10 at RX)
-uint8_t dim_speed = 10;			// dimming speed, 0-255, 0 = instant switching
+uint8_t dim_speed = 1;			// dimming speed, 0-255, 0 = instant switching
 uint8_t last_brightness = BRIGHTNESS_LOW;
 uint8_t current_brightness = BRIGHTNESS_LOW;
 boolean timer_initialized = false;
@@ -104,6 +104,7 @@ void write_config(boolean read_channel)
 			Serial.println(((digitalRead(i) == HIGH) ? 0 : 1));
 #endif
 			j++;
+			pinMode(i, OUTPUT);
 		}
 	}
 	rx_config.b[0] = channel;
@@ -266,6 +267,7 @@ void setup()
 	{
 		write_config(true);
 	}
+	pinMode(PROG_ENABLE_PIN, OUTPUT);
 	rf.RXInit(RX_PIN);
 	read_config();
 	pinMode(DIM_PIN, OUTPUT);
