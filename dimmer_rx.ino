@@ -13,7 +13,7 @@
 
 #define CONFIG_ADDRESS	0x00	// EEPROM address to store configuration
 #define CONFIG_SIZE		0x0F 	// configuration array size in bytes
-#define CONFIG_BACKUPS 	3 		// number of configuration copies to store
+#define CONFIG_BACKUPS 	1 		// number of configuration copies to store
 
 typedef struct
 {
@@ -23,10 +23,10 @@ typedef struct
 
 rx_config_t rx_config;
 
-#define RX_PIN 11				// TX connects to this pin
+#define RX_PIN 0				// RX connects to this pin
 #define DIM_PIN 9 				// dimmer output pin
 #define LED_PIN 13				// LED connects to this pin
-#define	PROG_ENABLE_PIN 3 		// if this pin is LOW, enable TX programming mode. Pins 5-9 are used to set channel
+#define	PROG_ENABLE_PIN 3 		// if this pin is LOW, enable RX programming mode. Pins (PROG_ENABLE_PIN+1) to (PROG_ENABLE_PIN+PROG_PIN_COUNT) are used to set channel
 #define PROG_PIN_COUNT 5 		// number of programming pins
 
 // Dimmer 3-byte message format
@@ -44,6 +44,10 @@ rx_config_t rx_config;
 #define MSG_SET_LOW		0x01	// set low dimmable brightness value (multiplied by 10 at RX)
 #define MSG_SET_HIGH	0x02	// set high dimmable brightness value (multiplied by 10 at RX)
 #define MSG_SET_SPEED	0x03	// set dimming speed, 0-255, 0 = instant switching
+#define MSG_SET_P_LOW	0x04	// set poweron low dimmable brightness value (multiplied by 10 at RX)
+#define MSG_SET_P_HIGH	0x05	// set poweron high dimmable brightness value (multiplied by 10 at RX)
+#define MSG_SET_P_SPEED	0x06	// set poweron dimming speed, 0-255, 0 = instant switching
+#define MSG_SET_CHANNEL	0x07	// change channel permanently
 
 #define BRIGHTNESS_HIGH	0xAA	// value to be sent for high brightness
 #define BRIGHTNESS_LOW	0x3C	// value to be sent for low brightness
@@ -52,6 +56,10 @@ uint8_t channel = 0;			// channel to transmit information, 5 bits are used (31 c
 uint8_t dim_low = 0;			// low dimmable brightness value (multiplied by 10 at RX)
 uint8_t dim_high = 100;			// high dimmable brightness value (multiplied by 10 at RX)
 uint8_t dim_speed = 1;			// dimming speed, 0-255, 0 = instant switching
+uint8_t dim_p_low = 0;			// poweron low dimmable brightness value (multiplied by 10 at RX)
+uint8_t dim_p_high = 100;		// poweron high dimmable brightness value (multiplied by 10 at RX)
+uint8_t dim_p_speed = 3;		// poweron dimming speed, 0-255, 0 = instant switching
+
 uint8_t last_brightness = BRIGHTNESS_LOW;
 uint8_t current_brightness = BRIGHTNESS_LOW;
 boolean timer_initialized = false;
@@ -82,7 +90,7 @@ byte crc8(const byte *data, byte len)
 
 void zero_unused_config()
 {
-	for (uint8_t i = 5; i < CONFIG_SIZE; i++)
+	for (uint8_t i = 8; i < CONFIG_SIZE; i++)
 	{
 		rx_config.b[i] = 0;
 	}
@@ -106,17 +114,28 @@ void write_config(boolean read_channel)
 			j++;
 			pinMode(i, OUTPUT);
 		}
+
+		for (uint8_t i = 0; i < channel; i++)
+		{
+			digitalWrite(LED_PIN, HIGH);
+			delay(1000);
+			digitalWrite(LED_PIN, LOW);
+			delay(300);
+		}
 	}
 	rx_config.b[0] = channel;
 	rx_config.b[1] = dim_low;
 	rx_config.b[2] = dim_high;
 	rx_config.b[3] = dim_speed;
-	rx_config.b[4] = last_brightness;
+	rx_config.b[4] = dim_p_low;
+	rx_config.b[5] = dim_p_high;
+	rx_config.b[6] = dim_p_speed;
+	rx_config.b[7] = BRIGHTNESS_HIGH;
 	zero_unused_config();
 	rx_config.crc = crc8(rx_config.b, CONFIG_SIZE);
 #ifdef DEBUG
 	Serial.print("write_config()");
-	for (uint8_t i = 0; i < 5; i++)
+	for (uint8_t i = 0; i < 8; i++)
 	{
 		Serial.print(" rx_config.b[");
 		Serial.print(i);
@@ -141,7 +160,7 @@ void read_config()
 #ifdef DEBUG
 		Serial.print("read_config() attempt ");
 		Serial.print(i);
-		for (uint8_t i = 0; i < 5; i++)
+		for (uint8_t i = 0; i < 8; i++)
 		{
 			Serial.print(" rx_config.b[");
 			Serial.print(i);
@@ -159,7 +178,10 @@ void read_config()
 			dim_low = rx_config.b[1];
 			dim_high = rx_config.b[2];
 			dim_speed = rx_config.b[3];
-			last_brightness = rx_config.b[4];
+			dim_p_low = rx_config.b[4];
+			dim_p_high = rx_config.b[5];
+			dim_p_speed = rx_config.b[6];
+			last_brightness = rx_config.b[7];
 #ifndef DEBUG
 			break;
 #endif
@@ -181,41 +203,56 @@ void read_config()
 	}
 }
 
-void dim_to(uint8_t value)
+void dim_to(uint8_t value, uint8_t prev_value, uint8_t *low, uint8_t *high, uint8_t *speed)
 {
+
+#ifdef DEBUG
+	Serial.print("dim_to(");
+	Serial.print(value);
+	Serial.print(", ");
+	Serial.print(prev_value);
+	Serial.print(", ");
+	Serial.print(*low);
+	Serial.print(", ");
+	Serial.print(*high);
+	Serial.print(", ");
+	Serial.print(*speed);
+	Serial.println(")");
+#endif
+
 	uint16_t pwm_freq;
 
 	if (!timer_initialized)
 	{
-		if (dim_speed > 0)
+		if (*speed > 0)
 		{
 			Timer1.initialize(10000); // set a timer of length 100000 microseconds (or 0.1 sec - or 10Hz => the led will blink 5 times, 5 cycles of on-and-off, per second)
 			timer_initialized = true;
 		}
 	}
 
-	if (dim_speed > 0)
+	if (*speed > 0)
 	{
-		if (value > last_brightness)		// dimming up
+		if (value > prev_value)		// dimming up
 		{
-			for (uint8_t i = dim_low; i <= dim_high; i++)
+			for (uint8_t i = (*low); i <= (*high); i++)
 			{
 				pwm_freq = i * 10;
 				Timer1.pwm(DIM_PIN, pwm_freq);
-				delay(dim_speed);
+				delay(*speed);
 #ifdef DEBUG
 				Serial.print("dim_to() pwm_freq=");
 				Serial.println(pwm_freq);
 #endif
 			}
 		}
-		else if (value < last_brightness)	// dimming down
+		else if (value < prev_value)	// dimming down
 		{
-			for (uint8_t i = dim_high; i > dim_low; i--)
+			for (uint8_t i = (*high); i > (*low); i--)
 			{
 				pwm_freq = i * 10;
 				Timer1.pwm(DIM_PIN, pwm_freq);
-				delay(dim_speed);
+				delay(*speed);
 #ifdef DEBUG
 				Serial.print("dim_to() pwm_freq=");
 				Serial.println(pwm_freq);
@@ -267,8 +304,6 @@ void setup()
 	{
 		write_config(true);
 	}
-	pinMode(PROG_ENABLE_PIN, OUTPUT);
-	rf.RXInit(RX_PIN);
 	read_config();
 	pinMode(DIM_PIN, OUTPUT);
 #ifdef DEBUG
@@ -284,7 +319,7 @@ void setup()
 	}
 	case BRIGHTNESS_HIGH:
 	{
-		digitalWrite(DIM_PIN, HIGH);
+		dim_to(BRIGHTNESS_HIGH, BRIGHTNESS_LOW, &dim_p_low, &dim_p_high, &dim_p_speed);
 		break;
 	}
 	default:
@@ -297,6 +332,9 @@ void setup()
 		break;
 	}
 	}
+	rf.RXInit(RX_PIN);
+	pinMode(PROG_ENABLE_PIN, OUTPUT);
+	pinMode(PROG_ENABLE_PIN, OUTPUT);
 }
 
 void process_rx()
@@ -317,7 +355,7 @@ void process_rx()
 				{
 					if (value != last_brightness)
 					{
-						dim_to(value);
+						dim_to(value, last_brightness, &dim_low, &dim_high, &dim_speed);
 						write_config(false);
 					}
 #ifdef DEBUG
@@ -346,6 +384,30 @@ void process_rx()
 				case MSG_SET_SPEED:
 				{
 					dim_speed = value;
+					write_config(false);
+					break;
+				}
+				case MSG_SET_P_LOW:
+				{
+					dim_p_low = value;
+					write_config(false);
+					break;
+				}
+				case MSG_SET_P_HIGH:
+				{
+					dim_p_high = value;
+					write_config(false);
+					break;
+				}
+				case MSG_SET_P_SPEED:
+				{
+					dim_p_speed = value;
+					write_config(false);
+					break;
+				}
+				case MSG_SET_CHANNEL:
+				{
+					channel = value;
 					write_config(false);
 					break;
 				}
